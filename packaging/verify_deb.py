@@ -18,7 +18,7 @@ with tarfile.open(fileobj=io.BytesIO(read('control.tar.gz')),mode='r:gz') as tar
     sums=tar.extractfile('./md5sums').read().decode().splitlines()
 assert 'Architecture: arm64\n' in control
 assert 'Depends: libc6 (>= 2.38)' in control
-assert 'Version: 0.2.0~beta1\n' in control
+assert 'Version: 0.2.0~beta3\n' in control
 payload={}
 with tarfile.open(fileobj=io.BytesIO(read('data.tar.gz')),mode='r:gz') as tar:
     for entry in tar:

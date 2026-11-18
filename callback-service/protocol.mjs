@@ -20,7 +20,7 @@ export default {
       if(allowed.status!==200)return allowed;
       let data;
       try {const text=await request.text();if(text.length>4096)return json({error:'too_large'},413);data=JSON.parse(text);}catch{return json({error:'invalid_json'},400);}
-      if(!data || !hex64.test(data.state) || typeof data.server!=='string' || data.server.length>253 || !/^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/.test(data.server) || typeof data.client_id!=='string' || !/^[\w-]{1,256}$/.test(data.client_id) || !/^[\w-]{43}$/.test(data.challenge))return json({error:'invalid_session'},400);
+      if(!data || !hex64.test(data.state) || typeof data.server!=='string' || data.server.length>253 || !/^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/.test(data.server) || (data.favourites!==undefined && typeof data.favourites!=='boolean') || (data.search!==undefined && typeof data.search!=='boolean') || typeof data.client_id!=='string' || !/^[\w-]{1,256}$/.test(data.client_id) || !/^[\w-]{43}$/.test(data.challenge))return json({error:'invalid_session'},400);
       return env.PAIRINGS.getByName(data.state).request(new Request(url.origin+'/create',{method:'POST',body:JSON.stringify(data)}));
     }
     const match=url.pathname.match(/^\/(?:s|sessions)\/([a-f0-9]{64})(?:\/authorize)?$/);
@@ -77,7 +77,7 @@ export class PairingCore {
     }
     if(s.result)return page('Approval already received. Return to M-Pocket.');
     const auth=new URL('https://'+s.server+'/oauth/authorize');
-    auth.search=new URLSearchParams({response_type:'code',client_id:s.client_id,redirect_uri:url.origin+'/callback',scope:'read:statuses write:statuses',state:s.state,code_challenge:s.challenge,code_challenge_method:'S256'});
+    auth.search=new URLSearchParams({response_type:'code',client_id:s.client_id,redirect_uri:url.origin+'/callback',scope:'read:statuses write:statuses'+(s.favourites?' write:favourites':'')+(s.search?' read:search':''),state:s.state,code_challenge:s.challenge,code_challenge_method:'S256'});
     if(url.pathname.endsWith('/authorize'))return new Response(null,{status:302,headers:{...headers,Location:auth.href}});
     return page('Sign in to '+s.server+' to connect the Cardputer that displayed this QR. Only continue if you started this sign-in.',url.pathname+'/authorize','Continue to '+s.server);
   }

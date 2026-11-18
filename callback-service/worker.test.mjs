@@ -49,3 +49,22 @@ test('creation rate limit protects the free quota',async()=>{
  const env=environment();for(let i=0;i<10;i++)await worker.fetch(request('/sessions','POST',{}),env);
  const response=await worker.fetch(request('/sessions','POST',payload),env);assert.equal(response.status,429);assert.equal(response.headers.get('Retry-After'),'600');
 });
+
+test('likes permission is explicitly opt-in and older clients keep their original scope',async()=>{
+ const env=environment();
+ const body={...payload,favourites:true};
+ const response=await worker.fetch(request('/sessions','POST',body),env);assert.equal(response.status,201);
+ const redirect=await worker.fetch(request('/s/'+state+'/authorize'),env);
+ assert.equal(new URL(redirect.headers.get('Location')).searchParams.get('scope'),'read:statuses write:statuses write:favourites');
+ const old=environment();await create(old);
+ const oldRedirect=await worker.fetch(request('/s/'+state+'/authorize'),old);
+ assert.equal(new URL(oldRedirect.headers.get('Location')).searchParams.get('scope'),'read:statuses write:statuses');
+ const invalid=environment();const rejected=await worker.fetch(request('/sessions','POST',{...payload,favourites:'yes'}),invalid);assert.equal(rejected.status,400);
+});
+test('search permission is opt-in and composes with existing scopes',async()=>{
+ const env=environment();
+ const response=await worker.fetch(request('/sessions','POST',{...payload,search:true}),env);assert.equal(response.status,201);
+ const redirect=await worker.fetch(request('/s/'+state+'/authorize'),env);
+ assert.equal(new URL(redirect.headers.get('Location')).searchParams.get('scope'),'read:statuses write:statuses read:search');
+ const invalid=environment();assert.equal((await worker.fetch(request('/sessions','POST',{...payload,search:'yes'}),invalid)).status,400);
+});

@@ -18,6 +18,12 @@ int main(int argc,char **argv){
     lv_display_set_buffers(d,pixels,nullptr,sizeof(pixels),LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(d,[](lv_display_t *display,const lv_area_t *,uint8_t *){lv_display_flush_ready(display);});
     ui_init();
+    posts={{"Mira @mira@example.org","A sample post.","123",0,2,3,4}};token="test";mode=Browse;
+    for(bool theme:{false,true}){darkTheme=theme;draw();lv_obj_update_layout(lv_screen_active());
+        assert(!lv_obj_has_flag(timelineBar,LV_OBJ_FLAG_HIDDEN));assert(lv_obj_get_width(feedViewport)==274 && lv_obj_get_height(feedViewport)==64);
+        assert(std::string(lv_label_get_text(postActions)).find("Replies 2")!=std::string::npos);}
+    mode=Settings;draw();assert(lv_obj_has_flag(timelineBar,LV_OBJ_FLAG_HIDDEN));
+    posts.clear();token.clear();mode=Browse;darkTheme=false;draw();
     auto capture=[&](const char *name){if(argc>2){lv_refr_now(d);std::ofstream out(std::string(argv[2])+"/"+name+".rgb565",std::ios::binary);out.write((char*)pixels,sizeof(pixels));}};
     capture("welcome");
     assert(mode==Browse);key('o');assert(mode==Settings);key('1');assert(darkTheme);key('2');assert(largeText);
@@ -36,6 +42,22 @@ int main(int argc,char **argv){
     response({{"posts",json::array({{{"id","499"},{"title","Second"},{"body","Short"}},{{"id","498"},{"title","Third"},{"body","More"}}})}});
     assert(posts.size()==3 && indexPost==2);
     key('c');response({{"posts",json::array()}});assert(endOfFeed);
+    // Content warnings stay hidden until revealed, and retain their state on refresh.
+    posts={{"Mira @mira@example.social","Secret words","88",0}};indexPost=0;mode=Browse;
+    posts[0].target="88";posts[0].acct="mira@example.social";posts[0].visibility="private";posts[0].warning="Spoiler";draw();
+    assert(std::string(lv_label_get_text(feedText)).find("Secret words")==std::string::npos);
+    key('w');assert(std::string(lv_label_get_text(feedText)).find("Secret words")!=std::string::npos);
+    key('p');assert(mode==Compose && replyTarget=="88" && replyVisibility=="private" && input=="@mira@example.social ");
+    key('h',"hi");key(K_ENTER);assert(mode==Confirm);outgoing.clear();key('y');
+    {auto sent=json::parse(outgoing.substr(0,outgoing.find('\n')));assert(sent["reply_to"]=="88" && sent["visibility"]=="private");}
+    response({{"published",true}});assert(replyTarget.empty() && mode==Browse);
+    key('b');assert(notice=="This post cannot be boosted.");
+    posts[0].visibility="public";outgoing.clear();key('b');assert(busy);
+    {auto sent=json::parse(outgoing.substr(0,outgoing.find('\n')));assert(sent["target"]=="88" && !sent["undo"].get<bool>());}
+    response({{"target","88"},{"boosted",true},{"boosts",5}});assert(posts[0].boosted && posts[0].boosts==5);
+    outgoing.clear();key('q');assert(mode==Search);key('c',"cats");key(K_ENTER);assert(pendingOp=="search");
+    response({{"posts",json::array({{{"id","77"},{"target","77"},{"title","Result"},{"body","Found"}}})}});
+    assert(searchView && posts.size()==1 && posts[0].id=="77");key(K_ESCAPE);assert(!searchView && posts[0].id=="88");
     key('n');key('a',"draft");key(K_ENTER);assert(mode==Confirm);key(K_ESCAPE);assert(input.empty() && mode==Browse);
     key('o');key('5');response({{"signed_out",true}});assert(token.empty() && posts.empty());
     key('l');response({{"qr","https://pocket-mastodon-callback.davforge.workers.dev/s/"+std::string(64,'a')}});assert(mode==QR && nextPoll>0);capture("qr");

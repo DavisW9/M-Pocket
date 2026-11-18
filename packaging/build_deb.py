@@ -9,7 +9,7 @@ import struct
 import sys
 import tarfile
 
-VERSION='0.2.0~beta1'
+VERSION='0.2.0~beta3'
 
 def archive(files):
     output=io.BytesIO()
@@ -47,7 +47,7 @@ Maintainer: m pocket local build <local@localhost>
 Installed-Size: {math.ceil(size/1024)}
 Depends: libc6 (>= 2.38), libstdc++6 (>= 11), libgcc-s1, python3 (>= 3.9), ca-certificates
 Description: Mastodon client for Cardputer Zero (hardware-test beta)
- Purple light and dark themes, paged feeds, settings, and phone QR sign-in.
+ Saved login, paged feeds, search, replies, boosts, and content warnings.
  Native 320x170 Linux framebuffer application. Physical hardware validation
  is still required before public release.
 '''.encode()

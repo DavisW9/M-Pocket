@@ -16,13 +16,16 @@
 using json=nlohmann::json;
 static lv_obj_t *feedViewport,*feedText,*progress,*head,*body,*foot,*qr,*topbar,*card,*meta,*brand,*brandMark,*keybar,*choices;
 static lv_obj_t *menuKeys[5],*menuText[5],*menuValues[5];
+static lv_obj_t *timelineBar,*timelineTitle,*timelineTab,*postPanel,*avatar,*avatarLetter,*accountLabel,*postActions,*separator;
 static bool darkTheme=false,largeText=false,busy=false,home=false,endOfFeed=false,running=true;
 // This is only an authentication indicator. Access tokens stay in the helper process.
 static std::string token,server="mastodon.social",input,notice;
-struct Post {std::string title,body,id;int scroll=0;};
-static std::vector<Post> posts;
+struct Post {std::string title,body,id;int scroll=0;int replies=0,boosts=0,favourites=0;std::string target,acct,visibility="public",warning;bool revealed=false,boosted=false;};
+static std::vector<Post> posts,savedPosts;
+static bool searchView=false;static int savedIndex=0;
+static std::string replyTarget,replyVisibility;
 static int indexPost=0;
-enum Mode {Settings,Help,Browse,ServerChoice,Server,Token,TokenHelp,AuthFallback,QR,Compose,Confirm};
+enum Mode {Settings,Help,Browse,ServerChoice,Server,Token,TokenHelp,AuthFallback,QR,Compose,Confirm,Search};
 static Mode mode=Browse;
 static double nowSeconds(){return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 static double nextPoll=0;
@@ -67,6 +70,9 @@ static void draw() {
     visible(feedViewport,false); visible(progress,false);
     visible(qr,isQR); visible(topbar,!isQR); visible(brand,!isQR); visible(brandMark,!isQR); visible(keybar,!isQR);
     visible(card,false); visible(choices,false); visible(meta,false);
+    bool timeline=mode==Browse && !posts.empty();
+    for(auto *o:{timelineBar,timelineTitle,timelineTab,postPanel,avatar,avatarLetter,accountLabel,postActions,separator})visible(o,timeline);
+    if(timeline){visible(topbar,false);visible(brand,false);visible(brandMark,false);visible(head,false);}else visible(head,!isQR);
     lv_obj_set_pos(body,12,43); lv_obj_set_size(body,296,95); lv_obj_set_style_text_font(body,largeText?&lv_font_montserrat_16:&lv_font_montserrat_14,0);
     lv_label_set_text(brand,"pocket");
     if(isQR) {
@@ -83,14 +89,14 @@ static void draw() {
             bool show=settings || i<3; visible(menuKeys[i],show); visible(menuText[i],show); visible(menuValues[i],show);
             if(!show) continue;
             lv_label_set_text(menuText[i],settings?labels[i]:servers[i]);
-            std::string value=settings?(i==0?(darkTheme?"Dark":"Light"):i==1?(largeText?"Large":"Normal"):i==2?server:i==3?"Shortcuts":token.empty()?"Not signed in":"This session"):"";
+            std::string value=settings?(i==0?(darkTheme?"Dark":"Light"):i==1?(largeText?"Large":"Normal"):i==2?server:i==3?"Shortcuts":token.empty()?"Not signed in":"Saved login"):"";
             lv_label_set_text(menuValues[i],value.c_str());
         }
         lv_label_set_text(foot,settings?"1-5  Change                         Esc  Back":"1-3  Select                         Esc  Back");return;
     }
     if(mode==Help) {
         lv_label_set_text(head,"KEYBOARD"); lv_obj_set_pos(body,12,37); lv_obj_set_height(body,106);lv_obj_set_style_text_font(body,&lv_font_montserrat_12,0);
-        lv_label_set_text(body,"Z / C   Previous / next post\nF / X   Scroll up / down\nR         Refresh feed\nT         Home / local feed\nN         Write a post\nS / L   Server / sign in\nO         Settings"); lv_label_set_text(foot,"A  Manual access token                Esc  Back"); return;
+        lv_label_set_text(body,"Z/C Posts  F/X Scroll  W Reveal CW\nB Boost  P Reply  Q Search\nR Refresh  T Home / local\nN Write  S Server  L Sign in\nO Settings  Esc Back"); lv_label_set_text(foot,"A  Manual access token                Esc  Back"); return;
     }
 
     if(mode==Server) { lv_label_set_text(head,"SERVER"); lv_label_set_text(body,("Your server address\n\n"+input+"_").c_str()); lv_label_set_text(foot,"Enter  Save                         Esc  Back"); return; }
@@ -102,7 +108,7 @@ static void draw() {
     }
     if(mode==TokenHelp) {
         lv_label_set_text(head,"MANUAL SIGN-IN");lv_obj_set_pos(body,12,38);lv_obj_set_size(body,296,106);lv_obj_set_style_text_font(body,&lv_font_montserrat_12,0);
-        lv_label_set_text(body,("On "+server+":\nPreferences > Development > New app\nEnable read:statuses (feed),\nwrite:statuses (posting).\nSave, then copy Your access token.\nKeep the token private.").c_str());
+        lv_label_set_text(body,("On "+server+":\nPreferences > Development > New app\nEnable read:statuses, read:search,\nwrite:statuses (posting / boosts).\nSave, then copy Your access token.\nKeep the token private.").c_str());
         lv_label_set_text(foot,"Enter  Type token                     Esc  Back");return;
     }
     if(mode==Token) {
@@ -111,10 +117,11 @@ static void draw() {
         lv_label_set_text(body,(server+"\n\n"+masked+"_\n\n"+(notice.empty()?"Your access token, not your password.":notice)).c_str());
         lv_label_set_text(foot,busy?"Checking token...":"Enter Sign in   Esc Cancel");return;
     }
-    if(mode==Compose || mode==Confirm) { lv_label_set_text(head,mode==Confirm?"READY TO POST?":"WRITE / PUBLIC"); lv_label_set_text(body,input.empty()?"What's happening?":input.c_str()); lv_label_set_text(foot,mode==Confirm?"Y  Publish                          N  Cancel":(!notice.empty()?notice.c_str():"Enter  Review                       Esc  Cancel")); return; }
+    if(mode==Search) {lv_label_set_text(head,"SEARCH POSTS");lv_label_set_text(body,("Search your server\n\n"+input+"_").c_str());lv_label_set_text(foot,notice.empty()?"Enter  Search                       Esc  Cancel":notice.c_str());return;}
+    if(mode==Compose || mode==Confirm) { lv_label_set_text(head,mode==Confirm?"READY TO POST?":replyTarget.empty()?"WRITE / PUBLIC":"WRITE / REPLY"); lv_label_set_text(body,input.empty()?"What's happening?":input.c_str()); lv_label_set_text(foot,mode==Confirm?"Y  Publish                          N  Cancel":(!notice.empty()?notice.c_str():"Enter  Review                       Esc  Cancel")); return; }
     std::string h=home?"HOME":"LOCAL"; if(!posts.empty()) h+="  "+std::to_string(indexPost+1)+"/"+std::to_string(posts.size());
     lv_label_set_text(head,h.c_str());
-    if(token.empty() && posts.empty() && (notice.empty() || notice.find("rejected access")!=std::string::npos)) {
+    if(!searchView && token.empty() && posts.empty() && (notice.empty() || notice.find("rejected access")!=std::string::npos)) {
         lv_obj_set_style_text_font(body,&lv_font_montserrat_20,0); lv_obj_set_pos(body,12,49); lv_obj_set_height(body,54);
         lv_label_set_text(body,"m pocket");
         visible(meta,true); lv_obj_set_pos(meta,12,116); lv_label_set_text(meta,server.c_str());
@@ -122,13 +129,32 @@ static void draw() {
     }
     if(!notice.empty() && posts.empty()) lv_label_set_text(body,notice.c_str());
     else if(!posts.empty()) {
-        visible(meta,true); lv_obj_set_pos(meta,12,39); lv_label_set_text(meta,posts[indexPost].title.c_str());
-        lv_obj_set_pos(body,12,61); lv_obj_set_size(body,296,78);
+        auto &selected=posts[indexPost];
+        const uint32_t ink=darkTheme?0xe9e9f2:0x252437;
+        const uint32_t subtle=darkTheme?0xaaaabd:0x686779;
+        const uint32_t bg=darkTheme?0x191a29:0xffffff;
+        lv_obj_set_style_bg_color(lv_screen_active(),lv_color_hex(darkTheme?0x11121e:0xf1f2f6),0);
+        lv_obj_set_style_bg_color(timelineBar,lv_color_hex(darkTheme?0x303044:0x563acc),0);
+        lv_obj_set_style_bg_color(postPanel,lv_color_hex(bg),0);
+        lv_obj_set_style_bg_color(avatar,lv_color_hex(darkTheme?0x514b70:0xe6e2f8),0);
+        lv_obj_set_style_bg_color(separator,lv_color_hex(darkTheme?0x353646:0xe7e7ef),0);
+        lv_obj_set_style_text_color(timelineTitle,lv_color_white(),0);lv_obj_set_style_text_color(timelineTab,lv_color_hex(0xded7ff),0);
+        lv_obj_set_style_text_color(avatarLetter,lv_color_hex(darkTheme?0xe0d7ff:0x563acc),0);
+        lv_obj_set_style_text_color(accountLabel,lv_color_hex(ink),0);
+        lv_obj_set_style_text_color(feedText,lv_color_hex(ink),0);
+        lv_obj_set_style_text_color(postActions,lv_color_hex(subtle),0);
+        lv_label_set_text(timelineTitle,searchView?"m  Search":home?"m  Home":"m  Local");
+        lv_label_set_text(timelineTab,(std::to_string(indexPost+1)+" / "+std::to_string(posts.size())+"   T switch").c_str());
+        std::string initial="@";if(!selected.title.empty() && selected.title[0]>='A' && selected.title[0]<='Z')initial=selected.title.substr(0,1);else if(!selected.title.empty() && selected.title[0]>='a' && selected.title[0]<='z')initial=std::string(1,selected.title[0]-'a'+'A');
+        lv_label_set_text(avatarLetter,initial.c_str());
+        lv_label_set_text(accountLabel,selected.title.c_str());
+        lv_label_set_text(postActions,(std::string("Likes ")+std::to_string(selected.favourites)+"   Replies "+std::to_string(selected.replies)+"   "+(selected.boosted?"Boosted ":"Boosts ")+std::to_string(selected.boosts)).c_str());
         lv_label_set_text(body,""); visible(feedViewport,true);
         auto &post=posts[indexPost];
         const lv_font_t *font=largeText?&lv_font_montserrat_16:&lv_font_montserrat_14;
         lv_obj_set_style_text_font(feedText,font,0);
-        lv_label_set_text(feedText,post.body.c_str());
+        std::string shown=post.warning.empty()?post.body:"CW: "+post.warning+(post.revealed?"\n"+post.body:"\n\nW  Show post");
+        lv_label_set_text(feedText,shown.c_str());
         lv_obj_update_layout(feedViewport);
         const int height=lv_obj_get_height(feedText), viewport=lv_obj_get_height(feedViewport);
         const int maximum=std::max(0,height-viewport);
@@ -138,30 +164,38 @@ static void draw() {
             visible(progress,true);
             int thumb=std::max(8,viewport*viewport/height);
             lv_obj_set_height(progress,thumb);
-            lv_obj_set_y(progress,61+(viewport-thumb)*post.scroll/maximum);
+            lv_obj_set_y(progress,55+(viewport-thumb)*post.scroll/maximum);
         }
-    } else lv_label_set_text(body,home?"No posts yet.\n\nFollow a few accounts,\nthen refresh with R.":"No local posts.\n\nR to try again.");
-    std::string hint=busy?"Loading...  F/X Scroll  O Settings":!notice.empty()?notice:endOfFeed && indexPost+1==(int)posts.size()?"End of feed   R Refresh   O Settings":"Z/C Posts   F/X Scroll   R Refresh   O Settings";
+    } else lv_label_set_text(body,searchView?"No matching posts.\n\nEsc to return to your feed.":home?"No posts yet.\n\nFollow a few accounts,\nthen refresh with R.":"No local posts.\n\nR to try again.");
+    std::string hint=busy?"Loading...  F/X Scroll  O Settings":!notice.empty()?notice:endOfFeed && indexPost+1==(int)posts.size()?"End of feed   R Refresh   O Settings":"Z/C Posts  F/X Scroll  P Reply  B Boost  Q Search";
     lv_label_set_text(foot,hint.c_str());
 }
 static void ui_init() {
     lv_obj_t *screen=lv_screen_active(); lv_obj_set_style_bg_color(screen,lv_color_hex(0xf2efdf),0);
     auto panel=[&](int x,int y,int w,int h,uint32_t color){auto *o=lv_obj_create(screen);lv_obj_remove_style_all(o);lv_obj_set_pos(o,x,y);lv_obj_set_size(o,w,h);lv_obj_set_style_bg_color(o,lv_color_hex(color),0);lv_obj_set_style_bg_opa(o,LV_OPA_COVER,0);lv_obj_clear_flag(o,LV_OBJ_FLAG_SCROLLABLE);return o;};
-    topbar=panel(12,30,296,1,0x262a28); card=panel(0,0,1,1,0xf2efdf); keybar=panel(0,146,320,24,0x262a28);
+    topbar=panel(12,30,296,1,0x262a28); card=panel(0,0,1,1,0xf2efdf);
+    timelineBar=panel(0,0,320,24,0x563acc);postPanel=panel(0,24,320,121,0xffffff);
+    avatar=panel(7,31,20,20,0xe6e2f8);lv_obj_set_style_radius(avatar,5,0);
+    separator=panel(8,123,304,1,0xe7e7ef);keybar=panel(0,146,320,24,0x262a28);
     auto label=[&](int x,int y,int w,const lv_font_t *font,uint32_t color){auto *o=lv_label_create(screen);lv_obj_set_pos(o,x,y);lv_obj_set_width(o,w);lv_obj_set_style_text_font(o,font,0);lv_obj_set_style_text_color(o,lv_color_hex(color),0);return o;};
+    timelineTitle=label(9,5,110,&lv_font_montserrat_12,0xffffff);
+    timelineTab=label(150,7,160,&lv_font_montserrat_10,0xded7ff);lv_obj_set_style_text_align(timelineTab,LV_TEXT_ALIGN_RIGHT,0);
+    avatarLetter=label(7,34,20,&lv_font_montserrat_10,0x563acc);lv_obj_set_style_text_align(avatarLetter,LV_TEXT_ALIGN_CENTER,0);
+    accountLabel=label(33,33,275,&lv_font_montserrat_12,0x252437);lv_label_set_long_mode(accountLabel,LV_LABEL_LONG_DOT);
+    postActions=label(10,129,300,&lv_font_montserrat_10,0x686779);lv_label_set_long_mode(postActions,LV_LABEL_LONG_DOT);
     brandMark=label(12,7,18,&lv_font_montserrat_16,0x7054aa);lv_label_set_text(brandMark,"m");
     brand=label(33,7,80,&lv_font_montserrat_16,0x262a28);
     head=label(116,11,192,&lv_font_montserrat_10,0x545b52); lv_obj_set_style_text_align(head,LV_TEXT_ALIGN_RIGHT,0);
     meta=label(12,39,296,&lv_font_montserrat_12,0x4d6551); lv_label_set_long_mode(meta,LV_LABEL_LONG_DOT);
     body=label(12,43,296,&lv_font_montserrat_14,0x262a28);lv_obj_set_height(body,95);lv_label_set_long_mode(body,LV_LABEL_LONG_WRAP);
     feedViewport=lv_obj_create(screen); lv_obj_remove_style_all(feedViewport);
-    lv_obj_set_pos(feedViewport,12,61);lv_obj_set_size(feedViewport,290,78);
+    lv_obj_set_pos(feedViewport,33,55);lv_obj_set_size(feedViewport,274,64);
     lv_obj_set_scrollbar_mode(feedViewport,LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(feedViewport,LV_DIR_VER);
     lv_obj_remove_flag(feedViewport,LV_OBJ_FLAG_SCROLL_ELASTIC);lv_obj_remove_flag(feedViewport,LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    feedText=lv_label_create(feedViewport); lv_obj_set_width(feedText,290);lv_obj_set_height(feedText,LV_SIZE_CONTENT);
+    feedText=lv_label_create(feedViewport); lv_obj_set_width(feedText,274);lv_obj_set_height(feedText,LV_SIZE_CONTENT);
     lv_label_set_long_mode(feedText,LV_LABEL_LONG_WRAP);
-    progress=panel(307,61,2,8,0x7054aa);
+    progress=panel(310,55,2,8,0x7054aa);
     foot=label(10,153,300,&lv_font_montserrat_10,0xf2efdf);
     lv_obj_set_height(foot,12);lv_label_set_long_mode(foot,LV_LABEL_LONG_DOT);
     choices=lv_obj_create(screen);lv_obj_remove_style_all(choices);lv_obj_set_pos(choices,12,38);lv_obj_set_size(choices,296,100);lv_obj_clear_flag(choices,LV_OBJ_FLAG_SCROLLABLE);
@@ -200,13 +234,15 @@ static void receive(const json &value){
         if(op=="login"||op=="poll"){mode=AuthFallback;nextPoll=0;}
         else if(op=="token")mode=Token;
         else if(op=="publish")mode=Compose;
+        else if(op=="search")mode=Search;
         draw();return;
     }
     if(op=="prefs"){
         auto p=value.at("prefs");server=p.value("server",std::string("mastodon.social"));
         darkTheme=p.value("dark",false);largeText=p.value("large",false);
+        if(value.value("authenticated",false)){token="signed-in";home=true;requestFeed();return;}
     }else if(op=="server"){
-        server=value.at("server");token.clear();input.clear();posts.clear();indexPost=0;endOfFeed=false;home=false;notice.clear();
+        server=value.at("server");token.clear();input.clear();posts.clear();savedPosts.clear();searchView=false;indexPost=0;endOfFeed=false;home=false;notice.clear();
     }else if(op=="login"||op=="poll"){
         if(value.value("fallback",false)){mode=AuthFallback;notice=value.value("message",std::string("Use an access token."));nextPoll=0;}
         else if(value.value("authenticated",false)){token="signed-in";home=true;posts.clear();indexPost=0;endOfFeed=false;mode=Browse;nextPoll=0;notice.clear();requestFeed();return;}
@@ -217,23 +253,30 @@ static void receive(const json &value){
     }else if(op=="token"){
         token="signed-in";input.clear();home=true;mode=Browse;posts.clear();indexPost=0;endOfFeed=false;notice.clear();requestFeed();return;
     }else if(op=="logout"){
-        token.clear();input.clear();posts.clear();indexPost=0;home=false;endOfFeed=false;notice.clear();mode=Browse;
-    }else if(op=="feed"){
+        token.clear();input.clear();posts.clear();savedPosts.clear();searchView=false;indexPost=0;home=false;endOfFeed=false;notice.clear();mode=Browse;
+    }else if(op=="feed"||op=="search"){
+        if(op=="search"){if(!searchView){savedPosts=posts;savedIndex=indexPost;}searchView=true;mode=Browse;input.clear();pendingAppend=false;}
         std::string selected=posts.empty()?"":posts[indexPost].id;
         int oldScroll=posts.empty()?0:posts[indexPost].scroll;
-        auto data=value.at("posts");auto count=posts.size();
+        auto data=value.at("posts");auto count=posts.size();auto oldPosts=posts;
         if(!pendingAppend){posts.clear();indexPost=0;endOfFeed=false;}
         for(auto &p:data){
             std::string id=p.at("id");
-            if(std::none_of(posts.begin(),posts.end(),[&](const Post &post){return post.id==id;}))posts.push_back({p.at("title"),p.at("body"),id,0});
+            if(std::none_of(posts.begin(),posts.end(),[&](const Post &post){return post.id==id;})){
+                Post item{};item.title=p.at("title");item.body=p.at("body");item.id=id;item.replies=p.value("replies",0);item.boosts=p.value("boosts",0);item.favourites=p.value("favourites",0);item.target=p.value("target",id);item.acct=p.value("acct",std::string());item.visibility=p.value("visibility",std::string("public"));item.warning=p.value("warning",std::string());item.boosted=p.value("boosted",false);
+                auto old=std::find_if(oldPosts.begin(),oldPosts.end(),[&](const Post &a){return a.id==id;});if(old!=oldPosts.end() && old->warning==item.warning)item.revealed=old->revealed;posts.push_back(std::move(item));}
         }
         if(pendingAppend){endOfFeed=posts.size()==count;if(posts.size()>count)indexPost=count;}
         else for(size_t i=0;i<posts.size();i++)if(posts[i].id==selected){indexPost=i;posts[i].scroll=oldScroll;break;}
         // Keep memory bounded when paging through long timelines.
         if(posts.size()>200){int trim=posts.size()-200;posts.erase(posts.begin(),posts.begin()+trim);indexPost=std::max(0,indexPost-trim);}
         notice.clear();
+    }else if(op=="boost"){
+        auto target=value.value("target",std::string());bool boosted=value.value("boosted",false);int count=value.value("boosts",0);
+        for(auto &post:posts)if(post.target==target){post.boosted=boosted;post.boosts=std::max(0,count);}
+        notice=boosted?"Boosted.":"Boost removed.";
     }else if(op=="publish"){
-        input.clear();mode=Browse;notice="Published.";
+        input.clear();replyTarget.clear();replyVisibility.clear();mode=Browse;notice="Published.";
     }
     draw();
 }
@@ -261,17 +304,18 @@ static void pump(){
 }
 enum {K_ESCAPE=27,K_ENTER=13,K_BACKSPACE=8,K_LEFT=256,K_RIGHT,K_UP,K_DOWN};
 static void key(int k,const std::string &text="",bool repeat=false){
-    bool editing=mode==Server||mode==Token||mode==Compose;
+    bool editing=mode==Server||mode==Token||mode==Compose||mode==Search;
     if(repeat && !editing && k!='f' && k!='x' && k!=K_UP && k!=K_DOWN)return;
     if(editing){
         if(busy)return;
-        if(k==K_ESCAPE){input.clear();notice.clear();mode=Browse;}
+        if(k==K_ESCAPE){input.clear();replyTarget.clear();replyVisibility.clear();notice.clear();mode=Browse;}
         else if(k==K_BACKSPACE && !input.empty()){size_t start=input.size()-1;while(start>0 && (input[start]&0xc0)==0x80)--start;input.erase(start);}
         else if(k==K_ENTER){
             if(mode==Server && !input.empty())setServer(input);
             else if(mode==Token && !input.empty()){send({{"op","token"},{"token",input}});input.clear();notice="Checking token...";}
+            else if(mode==Search && !input.empty()){send({{"op","search"},{"query",input}});notice="Searching...";}
             else if(mode==Compose && !input.empty())mode=Confirm;
-        }else if(!text.empty() && input.size()+text.size()<=(mode==Token?4096:mode==Server?253:500))input+=text;
+        }else if(!text.empty() && input.size()+text.size()<=(mode==Token?4096:mode==Server?253:mode==Search?200:500))input+=text;
         draw();return;
     }
     if(mode==QR){if(k=='a')beginToken();else if(k==K_ESCAPE){cancelAuth();mode=Browse;notice="Sign-in cancelled.";draw();}return;}
@@ -295,21 +339,25 @@ static void key(int k,const std::string &text="",bool repeat=false){
         draw();return;
     }
     if(mode==Confirm){
-        if(k=='y' && !busy){send({{"op","publish"},{"text",input}});mode=Browse;notice="Publishing...";}
-        else if(k=='n'||k==K_ESCAPE){mode=Browse;input.clear();notice="Post cancelled.";}
+        if(k=='y' && !busy){json command={{"op","publish"},{"text",input}};if(!replyTarget.empty()){command["reply_to"]=replyTarget;command["visibility"]=replyVisibility;}send(command);mode=Browse;notice="Publishing...";}
+        else if(k=='n'||k==K_ESCAPE){mode=Browse;input.clear();replyTarget.clear();replyVisibility.clear();notice="Post cancelled.";}
         draw();return;
     }
     if(k=='o')mode=Settings;
     else if(k=='h')mode=Help;
-    else if(k==K_ESCAPE)running=false;
+    else if(k==K_ESCAPE){if(searchView){posts=std::move(savedPosts);indexPost=std::min(savedIndex,std::max(0,(int)posts.size()-1));searchView=false;notice.clear();}else running=false;}
     else if(k=='s' && !busy)mode=ServerChoice;
     else if(k=='a' && !busy)beginToken();
     else if(k=='l')beginLogin();
-    else if(k=='n' && !busy){if(token.empty())notice="L Sign in   A Access token";else{input.clear();notice.clear();mode=Compose;}}
-    else if(k=='r')requestFeed();
-    else if(k=='t' && !busy){if(token.empty() && !home)notice="L Sign in to read your home feed";else{home=!home;posts.clear();indexPost=0;endOfFeed=false;requestFeed();}}
+    else if(k=='n' && !busy){if(token.empty())notice="L Sign in   A Access token";else{input.clear();replyTarget.clear();replyVisibility.clear();notice.clear();mode=Compose;}}
+    else if((k=='q'||k=='/') && !busy){if(token.empty())notice="Sign in to search.";else{input.clear();notice.clear();mode=Search;}}
+    else if(k=='w' && !posts.empty() && !posts[indexPost].warning.empty()){posts[indexPost].revealed=!posts[indexPost].revealed;posts[indexPost].scroll=0;notice.clear();}
+    else if(k=='p' && !busy && !posts.empty()){auto &post=posts[indexPost];if(token.empty())notice="Sign in to reply.";else if(post.target.empty()||post.acct.empty()||(post.visibility!="public"&&post.visibility!="unlisted"&&post.visibility!="private"&&post.visibility!="direct"))notice="Cannot reply to this post.";else{replyTarget=post.target;replyVisibility=post.visibility;input="@"+post.acct+" ";notice.clear();mode=Compose;}}
+    else if(k=='b' && !busy && !posts.empty()){auto &post=posts[indexPost];if(token.empty())notice="Sign in to boost.";else if(post.visibility=="private"||post.visibility=="direct")notice="This post cannot be boosted.";else{send({{"op","boost"},{"target",post.target},{"undo",post.boosted}});notice="Updating boost...";}}
+    else if(k=='r' && !searchView)requestFeed();
+    else if(k=='t' && !busy && !searchView){if(token.empty() && !home)notice="L Sign in to read your home feed";else{home=!home;posts.clear();indexPost=0;endOfFeed=false;requestFeed();}}
     else if(k=='z'||k==K_LEFT){if(indexPost>0)--indexPost;notice.clear();}
-    else if(k=='c'||k==K_RIGHT){if(indexPost+1<(int)posts.size())++indexPost;else if(!posts.empty() && !endOfFeed)requestFeed(true);notice.clear();}
+    else if(k=='c'||k==K_RIGHT){if(indexPost+1<(int)posts.size())++indexPost;else if(!searchView && !posts.empty() && !endOfFeed)requestFeed(true);notice.clear();}
     else if(k=='f'||k==K_UP){if(!posts.empty())posts[indexPost].scroll-=lv_font_get_line_height(largeText?&lv_font_montserrat_16:&lv_font_montserrat_14);}
     else if(k=='x'||k==K_DOWN){if(!posts.empty())posts[indexPost].scroll+=lv_font_get_line_height(largeText?&lv_font_montserrat_16:&lv_font_montserrat_14);}
     draw();
@@ -339,7 +387,7 @@ static void stopHelper(){
 #ifndef POCKET_TESTING
 #include "linux_device.hpp"
 int main(int argc,char **argv){
-    if(argc==2 && std::string(argv[1])=="--version"){puts("m pocket 0.2.0-beta1 (Cardputer Zero arm64)");return 0;}
+    if(argc==2 && std::string(argv[1])=="--version"){puts("m pocket 0.2.0-beta3 (Cardputer Zero arm64)");return 0;}
     lv_init();
     auto *display=lv_linux_fbdev_create();
     std::string fb=framebufferPath();

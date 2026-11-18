@@ -36,7 +36,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(exchange[0],'https://mastodon.social/oauth/token')
         self.assertEqual(exchange[1]['form']['code_verifier'],auth['verifier'])
         self.assertEqual(self.client.token,'ACCESS');self.assertIsNone(self.client.auth)
-        self.assertNotIn('ACCESS',''.join(p.read_text() for p in self.client.directory.iterdir()))
+        self.assertEqual(os.stat(self.client.directory/'session.json').st_mode&0o777,0o600)
+        self.assertEqual(s.Client(self.tmp.name,self.http).token,'ACCESS')
+        self.assertNotIn('ACCESS',(self.client.directory/'registrations.json').read_text())
     def test_callback_wrong_state_never_exchanges(self):
         self.login();self.http.responses=[(200,{'state':'wrong','code':'bad'}),(200,{'ok':True})]
         with self.assertRaises(s.Problem):self.client.poll()
@@ -74,9 +76,10 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaises(s.Problem):self.client.handle({'op':'server','server':host})
         self.assertEqual(self.client.server,'mastodon.social');self.assertEqual(self.client.token,'private')
     def test_feed_pagination_and_html(self):
-        self.client.token='private';self.http.responses=[(200,[{'id':'100','account':{'acct':'test','display_name':'Tester'},'content':'<p>Hello &amp; café</p><p>Next</p>'}])]
+        self.client.token='private';self.http.responses=[(200,[{'id':'100','account':{'acct':'test','display_name':'Tester'},'content':'<p>Hello &amp; café</p><p>Next</p>','replies_count':2,'reblogs_count':3,'favourites_count':4}])]
         result=self.client.handle({'op':'feed','home':True,'max_id':'101'})
         self.assertEqual(result['posts'][0]['body'],'Hello & café\nNext')
+        self.assertEqual([result['posts'][0][key] for key in ('replies','boosts','favourites')],[2,3,4])
         self.assertIn('max_id=101',self.http.calls[0][0]);self.assertEqual(self.http.calls[0][1]['token'],'private')
         with self.assertRaises(s.Problem):self.client.handle({'op':'feed','max_id':'101&evil=1'})
     def test_compose_constraints_and_direct_post(self):
@@ -86,6 +89,44 @@ class ServiceTests(unittest.TestCase):
         self.http.responses=[(200,{'id':'1'})]
         self.assertTrue(self.client.handle({'op':'publish','text':'Test fixture'})['published'])
         self.assertEqual(self.http.calls[0][0],'https://mastodon.social/api/v1/statuses')
+    def test_saved_login_restart_logout_and_server_change(self):
+        self.http.responses=[(200,[])]
+        self.client.manual('device-token')
+        restored=s.Client(self.tmp.name,self.http)
+        self.assertTrue(restored.handle({'op':'prefs'})['authenticated'])
+        self.assertEqual(restored.token,'device-token')
+        self.assertEqual(os.stat(restored.directory/'session.json').st_mode&0o777,0o600)
+        restored.handle({'op':'logout'})
+        self.assertFalse((restored.directory/'session.json').exists())
+        self.assertEqual(s.Client(self.tmp.name,self.http).token,'')
+        self.http.responses=[(200,[])]
+        restored.manual('other-token');restored.handle({'op':'server','server':'example.social'})
+        self.assertEqual(s.Client(self.tmp.name,self.http).token,'')
+    def test_search_warning_reply_and_boost_target(self):
+        self.client.token='token'
+        obj={'id':'88','account':{'acct':'mira@example.social','display_name':'Mira'},'visibility':'private','spoiler_text':'Sensitive','content':'<p>Hidden text</p>','reblogged':False}
+        wrapper={'id':'99','reblog':obj}
+        self.http.responses=[(200,{'statuses':[wrapper]})]
+        post=self.client.handle({'op':'search','query':'cats & dogs'})['posts'][0]
+        self.assertIn('q=cats+%26+dogs',self.http.calls[-1][0]);self.assertEqual(post['warning'],'Sensitive');self.assertEqual(post['body'],'Hidden text')
+        self.assertEqual(post['target'],'88');self.assertEqual(post['visibility'],'private')
+        self.http.responses=[(200,{'id':'4'})]
+        self.client.handle({'op':'publish','text':'@mira@example.social hi','reply_to':'88','visibility':'private'})
+        form=self.http.calls[-1][1]['form'];self.assertEqual(form['in_reply_to_id'],'88');self.assertEqual(form['visibility'],'private')
+        self.http.responses=[(200,{'reblogged':True,'reblogs_count':8})]
+        self.assertTrue(self.client.handle({'op':'boost','target':'88'})['boosted'])
+        self.assertTrue(self.http.calls[-1][0].endswith('/statuses/88/reblog'))
+        with self.assertRaises(s.Problem):self.client.handle({'op':'boost','target':'88/evil'})
+        self.http.responses=[(200,{'reblogged':False,'reblogs_count':7})]
+        self.client.handle({'op':'boost','target':'88','undo':True});self.assertTrue(self.http.calls[-1][0].endswith('/unreblog'))
+        self.http.responses=[s.Problem('denied',403)]
+        with self.assertRaisesRegex(s.Problem,'permission'):self.client.handle({'op':'search','query':'cats'})
+    def test_logout_write_failure_does_not_claim_success(self):
+        self.client.token='token'
+        from unittest.mock import patch
+        with patch.object(s.Path,'unlink',side_effect=OSError('read only')):
+            with self.assertRaises(s.Problem):self.client.handle({'op':'logout'})
+        self.assertEqual(self.client.token,'token')
     def test_no_redirects(self):
         self.assertIsNone(s.NoRedirect().redirect_request(None,None,302,'',{},'https://elsewhere.test'))
 if __name__=='__main__':unittest.main()

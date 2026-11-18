@@ -1,19 +1,15 @@
 # m pocket — Cardputer Zero device beta
 
-Version 0.2.0-beta1. Native Linux ARM64 application for the **Cardputer Zero** with a 320×170 framebuffer. This is not firmware for the original ESP32 Cardputer or Cardputer ADV, and it is not a macOS package.
+Version 0.2.0-beta3 (Mastodon-inspired timeline). Native Linux ARM64 application for the **Cardputer Zero** with a 320×170 framebuffer. This is not firmware for the original ESP32 Cardputer or Cardputer ADV, and it is not a macOS package.
 
-**Hardware testing is still required.** The ARM64 executable has been cross-compiled against the official Cardputer BSP v0.0.4. Automated UI, settings, networking, and packaging checks run on the Mac; they do not establish that the display, keyboard, Wi-Fi, or phone-camera QR scan work on a physical device. Do not submit this beta as a verified store release yet.
-
-## Download
-
-Get the `.deb` and checksums from the [v0.2.0-beta1 prerelease](https://github.com/DavisW9/m-pocket/releases/tag/v0.2.0-beta1). This repository contains the device client source and the optional [QR callback service](callback-service/README.md).
+The beta 3 package has been installed and, according to its owner, tested on a physical Cardputer Zero. It remains a beta; detailed hardware test results have not been recorded here. The ARM64 executable was cross-compiled against the official Cardputer BSP v0.0.4.
 
 ## Install on Cardputer Zero
 
-Copy `m-pocket_0.2.0-beta1_arm64.deb` to the device. In its Linux terminal, from the folder containing the file:
+Copy `m-pocket_0.2.0~beta3_arm64.deb` to the device. In its Linux terminal, from the folder containing the file:
 
 ```sh
-sudo apt install './m-pocket_0.2.0-beta1_arm64.deb'
+sudo apt install './m-pocket_0.2.0~beta3_arm64.deb'
 ```
 
 Then open **m pocket** from the Cardputer launcher. A launcher restart may be needed to discover a newly installed app. Wi-Fi must already be connected through the system settings.
@@ -26,11 +22,11 @@ Remove with `sudo apt remove m-pocket`. User settings remain in `~/.config/m-poc
 
 Press **S** to select your Mastodon server, then **L** for a QR code. Scan it on your phone, continue to your server, and approve access. The app finishes automatically: **no authorization string to type**. The physical app has no browser-launch option; that remains specific to the Mac emulator.
 
-If the callback service is unavailable or reaches its limit, press **A**, or select the displayed access-token fallback. On your server's website, create an application under Preferences → Development with `read:statuses` and `write:statuses`, then enter its access token. Tokens are masked while typed. Do not enter your account password.
+If the callback service is unavailable or reaches its limit, press **A**, or select the displayed access-token fallback. On your server's website, create an application under Preferences → Development with `read:statuses`, `read:search`, and `write:statuses`, then enter its access token. Tokens are masked while typed. Do not enter your account password.
 
 Cloudflare handles only QR pairing and the short-lived authorization-code callback. Reading feeds, validating manual tokens, and publishing go directly to your selected Mastodon server over HTTPS. OAuth uses state validation and PKCE S256. Passwords, access tokens, client secrets, and PKCE verifiers are not sent to the callback service. The server must support PKCE S256 for QR sign-in.
 
-Access tokens stay in memory and are forgotten when the app exits or you sign out. App registration credentials and preferences are kept in files readable only by your Linux user; device storage is not encrypted by this app. Sign-out clears this session; revoke the app on your server if you want to invalidate its token remotely.
+After sign-in, the access token is saved in `~/.config/m-pocket/session.json` (or under `$XDG_CONFIG_HOME`), in a directory accessible only to the current Linux user and a file with mode 0600. The app does not encrypt the device storage: anyone with access to that user account or unencrypted device storage could read the token. Sign-out and changing servers remove the saved token; revoke the app on your server to invalidate it remotely. Existing saved logins without `read:search` need to sign in again for search.
 
 ## Controls and settings
 
@@ -39,6 +35,9 @@ Access tokens stay in memory and are forgotten when the app exits or you sign ou
 | Z / C | Previous / next post; next loads another page at the end |
 | F / X | Scroll up / down; hold to repeat |
 | R | Refresh current feed |
+| Q | Search posts on your server; Esc returns to the feed |
+| P / B | Reply to / boost the current post (B again undoes a boost) |
+| W | Reveal or hide a post with a content warning |
 | T | Home / local feed |
 | N | Compose a public post; Enter reviews, Y publishes |
 | S / L / A | Server / QR sign-in / access token |
@@ -47,7 +46,7 @@ Access tokens stay in memory and are forgotten when the app exits or you sign ou
 
 Both themes stay purple. Settings persist across launches. Changing text size resets a post's scroll so its first line remains readable. Refresh preserves the selected post and scroll position if that post is still in the returned page. Pages are deduplicated and the newest 200 loaded posts are retained to bound memory.
 
-The firmware's printed symbol-key mappings are supported, plus ordinary USB keyboard punctuation and Shift. Text entry is ASCII in this beta. Server content is UTF-8, but built-in fonts do not cover every language or emoji. Media shows as an attachment marker. Very long posts are limited to 8,192 characters with a truncation marker. Local feeds depend on the instance's access policy. No notifications, media viewer, boosts, favourites, reply threads, multi-account support, or saved login yet.
+The firmware's printed symbol-key mappings are supported, plus ordinary USB keyboard punctuation and Shift. Text entry is ASCII in this beta. Server content is UTF-8, but built-in fonts do not cover every language or emoji. Media shows as an attachment marker. Very long posts are limited to 8,192 characters with a truncation marker. Local feeds depend on the instance's access policy. Search returns posts rather than people or hashtags; results depend on what the server allows the account to search, and are limited to the first 20. Replies retain the original post visibility. No notifications, media viewer, favorites, reply threads, or multi-account support yet.
 
 ## Build from source
 
@@ -61,7 +60,7 @@ cmake -S . -B build-arm64 \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build-arm64 -j 4
 DESTDIR="$PWD/stage" cmake --install build-arm64
-python3 packaging/build_deb.py stage m-pocket_0.2.0-beta1_arm64.deb
+python3 packaging/build_deb.py stage m-pocket_0.2.0~beta3_arm64.deb
 ```
 
 Optional display/input overrides: `M_POCKET_FB=/dev/fb0` and `M_POCKET_INPUT=/dev/input/eventN`. These help diagnose a firmware with different device names. No root background process is needed.
@@ -75,4 +74,4 @@ cmake --build build-tests -j 4
 ctest --test-dir build-tests --output-on-failure
 ```
 
-See [RELEASE-CHECK.md](RELEASE-CHECK.md) for this build's verification and remaining hardware checks.
+See RELEASE-CHECK.md for this build's verification and remaining hardware checks.

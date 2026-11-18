@@ -19,7 +19,7 @@ import urllib.request
 from email.utils import parsedate_to_datetime
 
 RELAY = 'https://pocket-mastodon-callback.davforge.workers.dev'
-SCOPES = 'read:statuses write:statuses'
+SCOPES = 'read:statuses read:search write:statuses'
 MAX_RESPONSE = 2 * 1024 * 1024
 
 class Problem(Exception):
@@ -51,7 +51,7 @@ class Http:
         self.opener=urllib.request.build_opener(NoRedirect(),urllib.request.HTTPSHandler(context=ssl.create_default_context()))
     def request(self, url, method='GET', token='', form=None, payload=None):
         if not url.startswith('https://'): raise Problem('HTTPS is required.')
-        headers={'Accept':'application/json','User-Agent':'m-pocket/0.2.0-beta1'}
+        headers={'Accept':'application/json','User-Agent':'m-pocket/0.2.0-beta3'}
         if token: headers['Authorization']='Bearer '+token
         body=None
         if form is not None:
@@ -92,9 +92,14 @@ def posts_from(data):
         if not isinstance(name,str):name=acct
         text=PlainText.convert(post.get('content'))
         warning=post.get('spoiler_text')
-        if isinstance(warning,str) and warning:text='CW: '+warning+'\n'+text
+        warning=warning.strip()[:512] if isinstance(warning,str) else ''
         if post.get('media_attachments'):text+='\n[Media attached]'
-        result.append({'id':original['id'],'title':name+' @'+acct,'body':text[:8192] + ('\n[Long post truncated]' if len(text)>8192 else '')})
+        counts={}
+        for src,dst in (('replies_count','replies'),('reblogs_count','boosts'),('favourites_count','favourites')):
+            value=post.get(src);counts[dst]=max(0,min(value,2147483647)) if isinstance(value,int) and not isinstance(value,bool) else 0
+        target=post.get('id') if isinstance(post.get('id'),str) else original['id']
+        visibility=post.get('visibility') if post.get('visibility') in ('public','unlisted','private','direct') else 'unknown'
+        result.append({'id':original['id'],'target':target,'acct':acct,'visibility':visibility,'warning':warning,'boosted':post.get('reblogged') is True,'title':name+' @'+acct,'body':text[:8192] + ('\n[Long post truncated]' if len(text)>8192 else ''),**counts})
     return result
 
 class Client:
@@ -106,6 +111,9 @@ class Client:
         self.prefs=self.load('preferences.json',{'dark':False,'large':False,'server':'mastodon.social'})
         try:self.server=hostname(self.prefs.get('server','mastodon.social'))
         except Problem:self.server='mastodon.social'
+        saved=self.load('session.json',{})
+        candidate=saved.get('token','')
+        if saved.get('server')==self.server and isinstance(candidate,str) and re.fullmatch(r'[A-Za-z0-9._~+/=-]{1,4096}',candidate):self.token=candidate
     def load(self,name,default):
         try:
             value=json.loads((self.directory/name).read_text())
@@ -118,6 +126,14 @@ class Client:
             os.replace(path,self.directory/name)
         finally:
             if os.path.exists(path):os.unlink(path)
+    def remember(self,candidate):
+        try:self.save('session.json',{'server':self.server,'token':candidate})
+        except OSError:raise Problem('Could not save login on device.')
+        self.token=candidate
+    def forget(self):
+        try:(self.directory/'session.json').unlink(missing_ok=True)
+        except OSError:raise Problem('Could not remove saved login.')
+        self.token=''
     def mastodon(self,path,**kwargs):
         if time.monotonic()<self.retry_at:raise Problem('Wait '+str(int(self.retry_at-time.monotonic())+1)+'s before retrying.')
         try:return self.http.request('https://'+self.server+path,**kwargs)
@@ -135,7 +151,7 @@ class Client:
         _,metadata=self.mastodon('/.well-known/oauth-authorization-server')
         if not isinstance(metadata,dict) or 'S256' not in metadata.get('code_challenge_methods_supported',[]):
             raise Problem('Server needs PKCE S256. Use an access token.')
-        redirect=RELAY+'/callback';key=self.server+'|'+redirect
+        redirect=RELAY+'/callback';key=self.server+'|'+redirect+'|'+SCOPES
         registry=self.load('registrations.json',{});registration=registry.get(key)
         if not isinstance(registration,dict) or not all(isinstance(registration.get(k),str) and registration[k] for k in ('client_id','client_secret')):
             _,registration=self.mastodon('/api/v1/apps',method='POST',form={'client_name':'m pocket','redirect_uris':redirect,'scopes':SCOPES})
@@ -143,7 +159,7 @@ class Client:
             registry[key]={k:registration[k] for k in ('client_id','client_secret')};self.save('registrations.json',registry)
         verifier=secrets.token_hex(32);state=secrets.token_hex(32)
         challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
-        try:status,pairing=self.http.request(RELAY+'/sessions',method='POST',payload={'state':state,'server':self.server,'client_id':registration['client_id'],'challenge':challenge})
+        try:status,pairing=self.http.request(RELAY+'/sessions',method='POST',payload={'state':state,'server':self.server,'client_id':registration['client_id'],'challenge':challenge,'search':True})
         except Problem: return {'fallback':True,'message':'QR service unavailable. Use an access token.'}
         if status!=201 or not isinstance(pairing,dict) or not isinstance(pairing.get('poll_secret'),str):return {'fallback':True,'message':'QR service unavailable. Use an access token.'}
         self.auth={**registration,'verifier':verifier,'state':state,'poll_secret':pairing['poll_secret'],'expires':time.monotonic()+600}
@@ -170,7 +186,7 @@ class Client:
             _,response=self.mastodon('/oauth/token',method='POST',form={'grant_type':'authorization_code','client_id':auth['client_id'],'client_secret':auth['client_secret'],'redirect_uri':RELAY+'/callback','code':code,'code_verifier':auth['verifier']})
             candidate=response.get('access_token') if isinstance(response,dict) else None
             if not isinstance(candidate,str) or not candidate:raise Problem('Server did not return an access token.')
-            self.token=candidate
+            self.remember(candidate)
         finally:self.cancel()
         return {'authenticated':True}
     def manual(self,value):
@@ -178,20 +194,20 @@ class Client:
         if not re.fullmatch(r'[A-Za-z0-9._~+/=-]{1,4096}',candidate):raise Problem('Enter a valid access token.')
         _,data=self.mastodon('/api/v1/timelines/home?limit=1',token=candidate)
         posts_from(data)
-        self.token=candidate
+        self.remember(candidate)
         return {'authenticated':True}
     def handle(self,command):
         op=command.get('op')
-        if op=='prefs':return {'prefs':{**self.prefs,'server':self.server}}
+        if op=='prefs':return {'prefs':{**self.prefs,'server':self.server},'authenticated':bool(self.token)}
         if op=='save_prefs':
             self.prefs.update(dark=bool(command.get('dark')),large=bool(command.get('large')),server=self.server);self.save('preferences.json',self.prefs);return {}
         if op=='server':
-            host=hostname(command.get('server',''));self.cancel();self.server=host;self.token='';self.retry_at=0;self.prefs['server']=host;self.save('preferences.json',self.prefs);return {'server':host}
+            host=hostname(command.get('server',''));self.cancel();self.forget();self.server=host;self.retry_at=0;self.prefs['server']=host;self.save('preferences.json',self.prefs);return {'server':host}
         if op=='login':return self.login()
         if op=='poll':return self.poll()
         if op=='cancel':self.cancel();return {}
         if op=='token':return self.manual(command.get('token',''))
-        if op=='logout':self.cancel();self.token='';return {'signed_out':True}
+        if op=='logout':self.cancel();self.forget();return {'signed_out':True}
         if op=='feed':
             home=bool(command.get('home',True))
             if home and not self.token:raise Problem('Sign in to read your home feed.')
@@ -203,11 +219,35 @@ class Client:
                 query['max_id']=cursor
             _,data=self.mastodon('/api/v1/timelines/'+('home' if home else 'public')+'?'+urllib.parse.urlencode(query),token=self.token)
             return {'posts':posts_from(data)}
+        if op=='search':
+            if not self.token:raise Problem('Sign in to search.')
+            query=command.get('query','')
+            if not isinstance(query,str) or not query.strip() or len(query)>200:raise Problem('Enter a search of 1-200 characters.')
+            params=urllib.parse.urlencode({'q':query.strip(),'type':'statuses','limit':'20','resolve':'false'})
+            try:_,data=self.mastodon('/api/v2/search?'+params,token=self.token)
+            except Problem as error:
+                if error.status==403:raise Problem('Search permission needed. Sign in again.',403)
+                raise
+            if not isinstance(data,dict):raise Problem('Invalid search response.')
+            return {'posts':posts_from(data.get('statuses',[]))}
+        if op=='boost':
+            if not self.token:raise Problem('Sign in before boosting.')
+            target=command.get('target','')
+            if not isinstance(target,str) or not re.fullmatch(r'[0-9]{1,40}',target):raise Problem('Invalid post ID.')
+            undo=command.get('undo') is True
+            _,result=self.mastodon('/api/v1/statuses/'+target+('/unreblog' if undo else '/reblog'),method='POST',token=self.token)
+            if not isinstance(result,dict):raise Problem('Invalid boost response.')
+            return {'boosted':result.get('reblogged') is True,'target':target,'boosts':result.get('reblogs_count',0)}
         if op=='publish':
             if not self.token:raise Problem('Sign in before posting.')
             text=command.get('text','')
             if not isinstance(text,str) or not text.strip() or len(text)>500:raise Problem('Use 1-500 characters.')
-            self.mastodon('/api/v1/statuses',method='POST',token=self.token,form={'status':text,'visibility':'public'})
+            form={'status':text,'visibility':'public'}
+            if command.get('reply_to'):
+                target=command['reply_to'];visibility=command.get('visibility','')
+                if not isinstance(target,str) or not re.fullmatch(r'[0-9]{1,40}',target) or visibility not in ('public','unlisted','private','direct'):raise Problem('Invalid reply target.')
+                form.update(in_reply_to_id=target,visibility=visibility)
+            self.mastodon('/api/v1/statuses',method='POST',token=self.token,form=form)
             return {'published':True}
         raise Problem('Unknown operation.')
 
