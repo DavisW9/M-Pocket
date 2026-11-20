@@ -30,28 +30,38 @@ static int openKeyboard(){
     closedir(dir);if(result>=0){if(fallback>=0)close(fallback);return result;}return fallback;
 }
 #include "keyboard_text.hpp"
-static bool leftShift=false,rightShift=false,caps=false,sym=false;
+static bool leftShift=false,rightShift=false,caps=false;
 static unsigned heldCode=0;
 static double repeatAt=0;
 static void dispatchKey(unsigned code,bool repeated){
     int k=0;
     switch(code){case KEY_ESC:k=K_ESCAPE;break;case KEY_ENTER:k=K_ENTER;break;case KEY_BACKSPACE:k=K_BACKSPACE;break;
         case KEY_LEFT:k=K_LEFT;break;case KEY_RIGHT:k=K_RIGHT;break;case KEY_UP:k=K_UP;break;case KEY_DOWN:k=K_DOWN;break;}
-    char text=typedCharacter(code,leftShift||rightShift,caps,sym);
+    char text=typedCharacter(code,leftShift||rightShift,caps,symbolLayerActive());
     if(!k && text)k=(text>='A'&&text<='Z')?text+32:text;
     if(k)key(k,text?std::string(1,text):"",repeated);
 }
 static void readKeyboard(int fd){
     input_event event;
     for(int n=0;n<64 && read(fd,&event,sizeof(event))==(ssize_t)sizeof(event);n++){
-        if(event.type==EV_SYN && event.code==SYN_DROPPED){heldCode=0;leftShift=rightShift=false;continue;}
+        if(event.type==EV_SYN && event.code==SYN_DROPPED){heldCode=0;leftShift=rightShift=false;resetSymLayer();continue;}
         if(event.type!=EV_KEY)continue;
         if(event.code==KEY_LEFTSHIFT){leftShift=event.value!=0;continue;}
         if(event.code==KEY_RIGHTSHIFT){rightShift=event.value!=0;continue;}
         if(event.code==KEY_CAPSLOCK){if(event.value==1)caps=!caps;continue;}
-        if(event.code==KEY_COMPOSE){if(event.value==1)sym=!sym;continue;}
+        if(event.code==KEY_COMPOSE||event.code==KEY_CD){
+            if(event.value==1)handleSymKey(true);
+            else if(event.value==0){
+                // Some Cardputer firmware reports the SYM key as KEY_CD and may
+                // deliver only its release edge. Synthesize a tap in that case.
+                if(event.code==KEY_CD&&!symHeld){handleSymKey(true);handleSymKey(false);}
+                else handleSymKey(false);
+            }
+            continue;
+        }
         if(event.value==0){if(heldCode==event.code)heldCode=0;continue;}
         if(event.value!=1)continue; // Own repeat works with keyboards without EV_REP.
+        if(symHeld&&textEntryMode())symChord=true;
         dispatchKey(event.code,false);
         bool repeatable=event.code==KEY_X||event.code==KEY_F||event.code==KEY_UP||event.code==KEY_DOWN||event.code==KEY_BACKSPACE;
         heldCode=repeatable?event.code:0;repeatAt=nowSeconds()+0.4;

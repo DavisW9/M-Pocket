@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=m pocket TEST
+Comment=Test build of M-Pocket for Cardputer Zero
+Exec=/usr/bin/m-pocket-test
+Icon=share/images/m-pocket-test.png
+Terminal=false
+Categories=Network;
+StartupNotify=false
