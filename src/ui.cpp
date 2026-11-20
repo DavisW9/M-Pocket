@@ -15,7 +15,7 @@
 #include <sys/wait.h>
 using json=nlohmann::json;
 static lv_obj_t *feedViewport,*feedText,*progress,*head,*body,*foot,*qr,*topbar,*card,*meta,*brand,*brandMark,*keybar,*choices;
-static lv_obj_t *menuKeys[5],*menuText[5],*menuValues[5];
+static lv_obj_t *menuKeys[5],*menuText[5],*menuValues[5],*symBadge;
 static lv_obj_t *timelineBar,*timelineTitle,*timelineTab,*postPanel,*avatar,*avatarLetter,*accountLabel,*postActions,*separator;
 static bool darkTheme=false,largeText=false,busy=false,home=false,endOfFeed=false,running=true;
 // This is only an authentication indicator. Access tokens stay in the helper process.
@@ -27,6 +27,25 @@ static std::string replyTarget,replyVisibility;
 static int indexPost=0;
 enum Mode {Settings,Help,Browse,ServerChoice,Server,Token,TokenHelp,AuthFallback,QR,Compose,Confirm,Search};
 static Mode mode=Browse;
+static bool symLocked=false,symHeld=false,symChord=false;
+static double symPressedAt=0;
+static double nowSeconds();
+static bool textEntryMode(){return mode==Server||mode==Token||mode==Compose||mode==Search;}
+static bool symbolLayerActive(){return textEntryMode()&&(symLocked||symHeld);}
+static void draw();
+static void updateSymBadge(){
+    if(!symBadge)return;
+    bool active=textEntryMode()&&(symLocked||symHeld);
+    if(active)lv_obj_remove_flag(symBadge,LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(symBadge,LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(symBadge,symHeld?"SYM HOLD":"SYM LOCK");
+}
+static void resetSymLayer(){symLocked=false;symHeld=false;symChord=false;symPressedAt=0;updateSymBadge();}
+static void handleSymKey(bool pressed){
+    if(!textEntryMode()){resetSymLayer();return;}
+    if(pressed){if(!symHeld){symHeld=true;symChord=false;symPressedAt=nowSeconds();}}
+    else if(symHeld){double duration=nowSeconds()-symPressedAt;if(!symChord&&duration<0.30)symLocked=!symLocked;symHeld=false;symChord=false;symPressedAt=0;}
+    updateSymBadge();draw();
+}
 static double nowSeconds(){return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 static double nextPoll=0;
 static int commandFD=-1,responseFD=-1;
@@ -34,7 +53,6 @@ static pid_t helperPID=-1;
 static std::string outgoing,incoming,pendingOp;
 static unsigned serial=0,pendingID=0;
 static bool pendingAppend=false;
-static void draw();
 static void send(json command,bool foreground=true){
     if(foreground){pendingID=++serial;command["id"]=pendingID;pendingOp=command.at("op").get<std::string>();busy=true;}
     else command["id"]=0;
@@ -52,6 +70,7 @@ static void applyTheme() {
     lv_obj_set_style_bg_color(progress,lv_color_hex(green),0);
     lv_obj_set_style_text_color(brandMark,lv_color_hex(green),0);
     for(auto *o:{body,brand}) lv_obj_set_style_text_color(o,lv_color_hex(ink),0);
+    lv_obj_set_style_text_color(symBadge,lv_color_hex(green),0);
     lv_obj_set_style_text_color(foot,lv_color_hex(0xf3effa),0);
     lv_obj_set_style_text_color(head,lv_color_hex(muted),0); lv_obj_set_style_text_color(meta,lv_color_hex(green),0);
     lv_obj_set_style_bg_color(topbar,lv_color_hex(darkTheme?0x51405f:0xd4c6e6),0);
@@ -64,7 +83,9 @@ static void applyTheme() {
     }
 }
 static void draw() {
+    if(!textEntryMode()&&(symLocked||symHeld))resetSymLayer();
     applyTheme();
+    updateSymBadge();
     const bool isQR=mode==QR;
     auto visible=[](lv_obj_t *o,bool show){if(show) lv_obj_remove_flag(o,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(o,LV_OBJ_FLAG_HIDDEN);};
     visible(feedViewport,false); visible(progress,false);
@@ -185,7 +206,7 @@ static void ui_init() {
     postActions=label(10,129,300,&lv_font_montserrat_10,0x686779);lv_label_set_long_mode(postActions,LV_LABEL_LONG_DOT);
     brandMark=label(12,7,18,&lv_font_montserrat_16,0x7054aa);lv_label_set_text(brandMark,"m");
     brand=label(33,7,80,&lv_font_montserrat_16,0x262a28);
-    head=label(116,11,192,&lv_font_montserrat_10,0x545b52); lv_obj_set_style_text_align(head,LV_TEXT_ALIGN_RIGHT,0);
+    head=label(116,11,140,&lv_font_montserrat_10,0x545b52); lv_obj_set_style_text_align(head,LV_TEXT_ALIGN_RIGHT,0); symBadge=label(262,10,50,&lv_font_montserrat_10,0x7054aa); lv_obj_set_style_text_align(symBadge,LV_TEXT_ALIGN_RIGHT,0); lv_obj_add_flag(symBadge,LV_OBJ_FLAG_HIDDEN);
     meta=label(12,39,296,&lv_font_montserrat_12,0x4d6551); lv_label_set_long_mode(meta,LV_LABEL_LONG_DOT);
     body=label(12,43,296,&lv_font_montserrat_14,0x262a28);lv_obj_set_height(body,95);lv_label_set_long_mode(body,LV_LABEL_LONG_WRAP);
     feedViewport=lv_obj_create(screen); lv_obj_remove_style_all(feedViewport);
@@ -387,7 +408,14 @@ static void stopHelper(){
 #ifndef POCKET_TESTING
 #include "linux_device.hpp"
 int main(int argc,char **argv){
-    if(argc==2 && std::string(argv[1])=="--version"){puts("m pocket 0.2.0-beta3 (Cardputer Zero arm64)");return 0;}
+    if(argc==2 && std::string(argv[1])=="--version"){
+#ifdef POCKET_TEST_BUILD
+        puts("m pocket TEST 0.2.0-beta3-test4 (Cardputer Zero arm64)");
+#else
+        puts("m pocket 0.2.1 (Cardputer Zero arm64)");
+#endif
+        return 0;
+    }
     lv_init();
     auto *display=lv_linux_fbdev_create();
     std::string fb=framebufferPath();
@@ -395,7 +423,12 @@ int main(int argc,char **argv){
     if(lv_display_get_horizontal_resolution(display)!=320 || lv_display_get_vertical_resolution(display)!=170){fprintf(stderr,"m pocket requires a 320x170 framebuffer.\n");return 1;}
     int keyboard=openKeyboard();
     if(keyboard<0){fprintf(stderr,"Cannot open Cardputer keyboard. Check input-group access.\n");return 1;}
-    if(!startHelper("/usr/lib/m-pocket/service.py")){fprintf(stderr,"Cannot start network helper.\n");close(keyboard);return 1;}
+    #ifdef POCKET_TEST_BUILD
+    const char *helperPath="/usr/lib/m-pocket-test/service.py";
+#else
+    const char *helperPath="/usr/lib/m-pocket/service.py";
+#endif
+    if(!startHelper(helperPath)){fprintf(stderr,"Cannot start network helper.\n");close(keyboard);return 1;}
     signal(SIGTERM,stopSignal);signal(SIGINT,stopSignal);
     ui_init();send({{"op","prefs"}});
     while(running && !stopRequested){readKeyboard(keyboard);pump();lv_timer_handler();usleep(5000);}
