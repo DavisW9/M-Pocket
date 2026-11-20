@@ -4,10 +4,6 @@
 // The firmware emits these custom keycodes for the printed SYM layer.
 // Values match M5Stack's MIT-licensed launcher keyboard_input.c.
 static char typedCharacter(unsigned code,bool shift,bool caps,bool sym){
-    // Cardputer Zero emits keypad codes for SYM chords rather than the
-    // underlying letter keycodes: Q is code 55, B is code 91.
-    if(sym && code==55)return '~';
-    if(sym && code==91)return '.';
     struct Symbol{unsigned code;char text;};
     static const Symbol custom[]={{183,'!'},{184,'@'},{185,'#'},{186,'$'},{187,'%'},{188,'^'},{189,'&'},{190,'*'},{191,'('},{192,')'},
         {193,'~'},{194,'`'},{195,'+'},{196,'-'},{197,'/'},{198,'\\'},{199,'{'},{200,'}'},{201,'['},{202,']'},
@@ -19,11 +15,7 @@ static char typedCharacter(unsigned code,bool shift,bool caps,bool sym){
     else if(code>=44 && code<=50)c="zxcvbnm"[code-44];
     else if(code>=2 && code<=11)return (shift||sym?"!@#$%^&*()":"1234567890")[code-2];
     if(c){
-        if(sym){
-            static const char symbolKeys[]="qwertyuiopasdghjklvbnm";
-            static const char symbolChars[]="~`+-/\\{}[],.|=:;_?<.'\"";
-            for(size_t i=0;i<sizeof(symbolKeys)-1;i++)if(c==symbolKeys[i])return symbolChars[i];
-        }
+        if(sym){const std::string letters="qwertyuiopasdghjklvbnm",symbols="~`+-/\\{}[],.|=:;_?<>\'\"";auto pos=letters.find(c);if(pos!=std::string::npos)return symbols[pos];}
         return shift!=caps?c-32:c;
     }
     switch(code){

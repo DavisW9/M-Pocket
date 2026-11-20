@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Build a standard Debian 2.0 archive without requiring root or dpkg on the host."""
 import gzip
-import argparse
 import hashlib
 import io
 import math
@@ -10,8 +9,7 @@ import struct
 import sys
 import tarfile
 
-VERSION='0.2.1'
-TEST_VERSION='0.2.0~beta3+test4'
+VERSION='0.2.0~beta3'
 
 def archive(files):
     output=io.BytesIO()
@@ -25,10 +23,8 @@ def archive(files):
             tar.addfile(info,io.BytesIO(data))
     return gzip.compress(output.getvalue(),compresslevel=9,mtime=0)
 
-def build(stage,destination,test_build=False):
-    package='m-pocket-test' if test_build else 'm-pocket'
-    version=TEST_VERSION if test_build else VERSION
-    executable=stage/f'usr/bin/{package}'
+def build(stage,destination):
+    executable=stage/'usr/bin/m-pocket'
     data=executable.read_bytes()
     if data[:5]!=b'\x7fELF\x02' or data[5]!=1 or struct.unpack_from('<H',data,18)[0]!=183:
         raise SystemExit('Refusing package: executable must be Linux ELF64 AArch64, not a host binary.')
@@ -38,21 +34,22 @@ def build(stage,destination,test_build=False):
         if path.is_file():
             name=path.relative_to(stage).as_posix()
             if name.startswith('DEBIAN/') or not name.startswith('usr/'):raise SystemExit('Unexpected package path: '+name)
-            files.append((name,path.read_bytes(),0o755 if name==f'usr/bin/{package}' else 0o644))
-    required={f'usr/bin/{package}',f'usr/lib/{package}/service.py',f'usr/share/APPLaunch/applications/{package}.desktop',f'usr/share/APPLaunch/share/images/{package}.png',f'usr/share/doc/{package}/LICENSE'}
+            files.append((name,path.read_bytes(),0o755 if name=='usr/bin/m-pocket' else 0o644))
+    required={'usr/bin/m-pocket','usr/lib/m-pocket/service.py','usr/share/APPLaunch/applications/m-pocket.desktop','usr/share/APPLaunch/share/images/m-pocket.png','usr/share/doc/m-pocket/LICENSE'}
     if not required.issubset({name for name,_,_ in files}):raise SystemExit('Incomplete staging tree')
     size=sum(len(data) for _,data,_ in files)
-    control=f'''Package: {package}
-Version: {version}
+    control=f'''Package: m-pocket
+Version: {VERSION}
 Section: net
 Priority: optional
 Architecture: arm64
 Maintainer: m pocket local build <local@localhost>
 Installed-Size: {math.ceil(size/1024)}
 Depends: libc6 (>= 2.38), libstdc++6 (>= 11), libgcc-s1, python3 (>= 3.9), ca-certificates
-Description: Mastodon client for Cardputer Zero ({'test build' if test_build else 'hardware-test beta'})
+Description: Mastodon client for Cardputer Zero (hardware-test beta)
  Saved login, paged feeds, search, replies, boosts, and content warnings.
- Native 320x170 Linux framebuffer application. {'Install alongside M-Pocket.' if test_build else 'Physical hardware validation is still required before public release.'}
+ Native 320x170 Linux framebuffer application. Physical hardware validation
+ is still required before public release.
 '''.encode()
     checksums=''.join(hashlib.md5(data).hexdigest()+'  '+name+'\n' for name,data,_ in files).encode()
     members=[('debian-binary',b'2.0\n'),('control.tar.gz',archive([('control',control,0o644),('md5sums',checksums,0o644)])),('data.tar.gz',archive(files))]
@@ -66,9 +63,5 @@ Description: Mastodon client for Cardputer Zero ({'test build' if test_build els
     print(f'Built {destination.name}: {destination.stat().st_size:,} bytes, {len(files)} files, ARM64')
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser()
-    parser.add_argument('stage',type=Path)
-    parser.add_argument('output',type=Path)
-    parser.add_argument('--test',action='store_true',help='build isolated m-pocket-test package')
-    args=parser.parse_args()
-    build(args.stage,args.output,args.test)
+    if len(sys.argv)!=3:raise SystemExit('Usage: build_deb.py STAGE OUTPUT.deb')
+    build(Path(sys.argv[1]),Path(sys.argv[2]))

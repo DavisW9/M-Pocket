@@ -1,15 +1,15 @@
 # m pocket — Cardputer Zero device beta
 
-Version 0.2.1 (Mastodon-inspired timeline). Native Linux ARM64 application for the **Cardputer Zero** with a 320×170 framebuffer. This is not firmware for the original ESP32 Cardputer or Cardputer ADV, and it is not a macOS package.
+Version 0.2.0-beta3 (Mastodon-inspired timeline). Native Linux ARM64 application for the **Cardputer Zero** with a 320×170 framebuffer. This is not firmware for the original ESP32 Cardputer or Cardputer ADV, and it is not a macOS package.
 
-Version 0.2.1 includes the corrected Cardputer Zero symbol-key mapping. The ARM64 executable is cross-compiled against the official Cardputer BSP v0.0.4.
+The beta 3 package has been installed and, according to its owner, tested on a physical Cardputer Zero. It remains a beta; detailed hardware test results have not been recorded here. The ARM64 executable was cross-compiled against the official Cardputer BSP v0.0.4.
 
 ## Install on Cardputer Zero
 
-Copy `m-pocket_0.2.1_arm64.deb` to the device. In its Linux terminal, from the folder containing the file:
+Copy `m-pocket_0.2.0~beta3_arm64.deb` to the device. In its Linux terminal, from the folder containing the file:
 
 ```sh
-sudo apt install './m-pocket_0.2.1_arm64.deb'
+sudo apt install './m-pocket_0.2.0~beta3_arm64.deb'
 ```
 
 Then open **m pocket** from the Cardputer launcher. A launcher restart may be needed to discover a newly installed app. Wi-Fi must already be connected through the system settings.
@@ -60,7 +60,7 @@ cmake -S . -B build-arm64 \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build-arm64 -j 4
 DESTDIR="$PWD/stage" cmake --install build-arm64
-python3 packaging/build_deb.py stage m-pocket_0.2.1_arm64.deb
+python3 packaging/build_deb.py stage m-pocket_0.2.0~beta3_arm64.deb
 ```
 
 Optional display/input overrides: `M_POCKET_FB=/dev/fb0` and `M_POCKET_INPUT=/dev/input/eventN`. These help diagnose a firmware with different device names. No root background process is needed.
