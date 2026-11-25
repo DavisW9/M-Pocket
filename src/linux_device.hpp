@@ -49,7 +49,7 @@ static void readKeyboard(int fd){
         if(event.code==KEY_LEFTSHIFT){leftShift=event.value!=0;continue;}
         if(event.code==KEY_RIGHTSHIFT){rightShift=event.value!=0;continue;}
         if(event.code==KEY_CAPSLOCK){if(event.value==1)caps=!caps;continue;}
-        if(event.code==KEY_COMPOSE||event.code==KEY_CD){
+        if(event.code==KEY_COMPOSE||event.code==KEY_CD||event.code==383){
             if(event.value==1)handleSymKey(true);
             else if(event.value==0){
                 // Some Cardputer firmware reports the SYM key as KEY_CD and may

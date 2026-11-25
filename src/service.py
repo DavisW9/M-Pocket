@@ -19,7 +19,7 @@ import urllib.request
 from email.utils import parsedate_to_datetime
 
 RELAY = 'https://pocket-mastodon-callback.davforge.workers.dev'
-SCOPES = 'read:statuses read:search write:statuses'
+SCOPES = 'read:statuses read:search write:statuses write:favourites'
 MAX_RESPONSE = 2 * 1024 * 1024
 
 class Problem(Exception):
@@ -78,7 +78,9 @@ class PlainText(HTMLParser):
     def handle_data(self,data):self.parts.append(data)
     @classmethod
     def convert(cls,value):
-        p=cls();p.feed(value if isinstance(value,str) else '');return ''.join(p.parts).strip()
+        p=cls();p.feed(value if isinstance(value,str) else '')
+        # The built-in screen fonts lack typographic apostrophes.
+        return ''.join(p.parts).strip().translate(str.maketrans({'\u2018': "'", '\u2019': "'", '\u02bc': "'"}))
 
 def posts_from(data):
     if not isinstance(data,list):raise Problem('Invalid timeline response.')
@@ -99,7 +101,7 @@ def posts_from(data):
             value=post.get(src);counts[dst]=max(0,min(value,2147483647)) if isinstance(value,int) and not isinstance(value,bool) else 0
         target=post.get('id') if isinstance(post.get('id'),str) else original['id']
         visibility=post.get('visibility') if post.get('visibility') in ('public','unlisted','private','direct') else 'unknown'
-        result.append({'id':original['id'],'target':target,'acct':acct,'visibility':visibility,'warning':warning,'boosted':post.get('reblogged') is True,'title':name+' @'+acct,'body':text[:8192] + ('\n[Long post truncated]' if len(text)>8192 else ''),**counts})
+        result.append({'id':original['id'],'target':target,'acct':acct,'visibility':visibility,'warning':warning,'boosted':post.get('reblogged') is True,'favourited':post.get('favourited') is True,'title':name+' @'+acct,'body':text[:8192] + ('\n[Long post truncated]' if len(text)>8192 else ''),**counts})
     return result
 
 class Client:
@@ -159,7 +161,7 @@ class Client:
             registry[key]={k:registration[k] for k in ('client_id','client_secret')};self.save('registrations.json',registry)
         verifier=secrets.token_hex(32);state=secrets.token_hex(32)
         challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
-        try:status,pairing=self.http.request(RELAY+'/sessions',method='POST',payload={'state':state,'server':self.server,'client_id':registration['client_id'],'challenge':challenge,'search':True})
+        try:status,pairing=self.http.request(RELAY+'/sessions',method='POST',payload={'state':state,'server':self.server,'client_id':registration['client_id'],'challenge':challenge,'search':True,'favourites':True})
         except Problem: return {'fallback':True,'message':'QR service unavailable. Use an access token.'}
         if status!=201 or not isinstance(pairing,dict) or not isinstance(pairing.get('poll_secret'),str):return {'fallback':True,'message':'QR service unavailable. Use an access token.'}
         self.auth={**registration,'verifier':verifier,'state':state,'poll_secret':pairing['poll_secret'],'expires':time.monotonic()+600}
@@ -230,6 +232,18 @@ class Client:
                 raise
             if not isinstance(data,dict):raise Problem('Invalid search response.')
             return {'posts':posts_from(data.get('statuses',[]))}
+        if op=='favourite':
+            if not self.token:raise Problem('Sign in before liking.')
+            target=command.get('target','')
+            if not isinstance(target,str) or not re.fullmatch(r'[0-9]{1,40}',target):raise Problem('Invalid post ID.')
+            try:
+                _,result=self.mastodon('/api/v1/statuses/'+target+('/unfavourite' if command.get('undo') is True else '/favourite'),method='POST',token=self.token)
+            except Problem as error:
+                if error.status==403:raise Problem('Like permission needed. Sign in again.',403)
+                raise
+            if not isinstance(result,dict) or not isinstance(result.get('favourited'),bool):raise Problem('Invalid like response.')
+            count=result.get('favourites_count',0)
+            return {'favourited':result['favourited'],'target':target,'favourites':max(0,count) if isinstance(count,int) and not isinstance(count,bool) else 0}
         if op=='boost':
             if not self.token:raise Problem('Sign in before boosting.')
             target=command.get('target','')

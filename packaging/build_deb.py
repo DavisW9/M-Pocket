@@ -10,8 +10,8 @@ import struct
 import sys
 import tarfile
 
-VERSION='0.2.1'
-TEST_VERSION='0.2.0~beta3+test4'
+VERSION='0.2.2~symbeta1'
+TEST_VERSION='0.2.2~beta1'
 
 def archive(files):
     output=io.BytesIO()

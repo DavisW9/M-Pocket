@@ -20,7 +20,7 @@ static lv_obj_t *timelineBar,*timelineTitle,*timelineTab,*postPanel,*avatar,*ava
 static bool darkTheme=false,largeText=false,busy=false,home=false,endOfFeed=false,running=true;
 // This is only an authentication indicator. Access tokens stay in the helper process.
 static std::string token,server="mastodon.social",input,notice;
-struct Post {std::string title,body,id;int scroll=0;int replies=0,boosts=0,favourites=0;std::string target,acct,visibility="public",warning;bool revealed=false,boosted=false;};
+struct Post {std::string title,body,id;int scroll=0;int replies=0,boosts=0,favourites=0;std::string target,acct,visibility="public",warning;bool revealed=false,boosted=false,favourited=false;};
 static std::vector<Post> posts,savedPosts;
 static bool searchView=false;static int savedIndex=0;
 static std::string replyTarget,replyVisibility;
@@ -99,7 +99,10 @@ static void draw() {
     if(isQR) {
         lv_label_set_text(head,""); lv_label_set_text(foot,"");
         lv_obj_set_pos(body,172,10); lv_obj_set_size(body,140,150); lv_obj_set_style_text_font(body,&lv_font_montserrat_12,0);
-        lv_label_set_text(body,"SIGN IN\n\nScan with phone.\nApprove access.\n\nSign-in finishes\nautomatically.\n\nA  Access token\nEsc  Cancel"); return;
+        std::string qrServer=server;
+        if(qrServer.size()>18) qrServer=qrServer.substr(0,15)+"...";
+        const std::string qrInstructions=qrServer+"\n\nScan with phone.\nApprove access.\n\nSign-in finishes\nautomatically.\n\nA  Access token\nEsc  Cancel";
+        lv_label_set_text(body,qrInstructions.c_str()); return;
     }
     if(mode==Settings || mode==ServerChoice) {
         const bool settings=mode==Settings;
@@ -117,7 +120,7 @@ static void draw() {
     }
     if(mode==Help) {
         lv_label_set_text(head,"KEYBOARD"); lv_obj_set_pos(body,12,37); lv_obj_set_height(body,106);lv_obj_set_style_text_font(body,&lv_font_montserrat_12,0);
-        lv_label_set_text(body,"Z/C Posts  F/X Scroll  W Reveal CW\nB Boost  P Reply  Q Search\nR Refresh  T Home / local\nN Write  S Server  L Sign in\nO Settings  Esc Back"); lv_label_set_text(foot,"A  Manual access token                Esc  Back"); return;
+        lv_label_set_text(body,"Z/C Posts  F/X Scroll  W Reveal CW\nB Boost  P Reply  V Like  Q Search\nR Refresh  T Home / local\nN Write  S Server  L Sign in\nO Settings  Esc Back"); lv_label_set_text(foot,"A  Manual access token                Esc  Back"); return;
     }
 
     if(mode==Server) { lv_label_set_text(head,"SERVER"); lv_label_set_text(body,("Your server address\n\n"+input+"_").c_str()); lv_label_set_text(foot,"Enter  Save                         Esc  Back"); return; }
@@ -129,7 +132,7 @@ static void draw() {
     }
     if(mode==TokenHelp) {
         lv_label_set_text(head,"MANUAL SIGN-IN");lv_obj_set_pos(body,12,38);lv_obj_set_size(body,296,106);lv_obj_set_style_text_font(body,&lv_font_montserrat_12,0);
-        lv_label_set_text(body,("On "+server+":\nPreferences > Development > New app\nEnable read:statuses, read:search,\nwrite:statuses (posting / boosts).\nSave, then copy Your access token.\nKeep the token private.").c_str());
+        lv_label_set_text(body,("On "+server+":\nPreferences > Development > New app\nEnable read:statuses, read:search,\nwrite:statuses and write:favourites.\nSave, then copy Your access token.\nKeep the token private.").c_str());
         lv_label_set_text(foot,"Enter  Type token                     Esc  Back");return;
     }
     if(mode==Token) {
@@ -145,7 +148,9 @@ static void draw() {
     if(!searchView && token.empty() && posts.empty() && (notice.empty() || notice.find("rejected access")!=std::string::npos)) {
         lv_obj_set_style_text_font(body,&lv_font_montserrat_20,0); lv_obj_set_pos(body,12,49); lv_obj_set_height(body,54);
         lv_label_set_text(body,"m pocket");
-        visible(meta,true); lv_obj_set_pos(meta,12,116); lv_label_set_text(meta,server.c_str());
+        visible(meta,true); lv_obj_set_pos(meta,12,116);
+        const std::string serverHint=server+" (S to change)";
+        lv_label_set_text(meta,serverHint.c_str());
         lv_label_set_text(foot,"L Sign in   A Token   S Server   O Settings"); return;
     }
     if(!notice.empty() && posts.empty()) lv_label_set_text(body,notice.c_str());
@@ -169,7 +174,7 @@ static void draw() {
         std::string initial="@";if(!selected.title.empty() && selected.title[0]>='A' && selected.title[0]<='Z')initial=selected.title.substr(0,1);else if(!selected.title.empty() && selected.title[0]>='a' && selected.title[0]<='z')initial=std::string(1,selected.title[0]-'a'+'A');
         lv_label_set_text(avatarLetter,initial.c_str());
         lv_label_set_text(accountLabel,selected.title.c_str());
-        lv_label_set_text(postActions,(std::string("Likes ")+std::to_string(selected.favourites)+"   Replies "+std::to_string(selected.replies)+"   "+(selected.boosted?"Boosted ":"Boosts ")+std::to_string(selected.boosts)).c_str());
+        lv_label_set_text(postActions,(std::string(selected.favourited?"Liked ":"Likes ")+std::to_string(selected.favourites)+"   Replies "+std::to_string(selected.replies)+"   "+(selected.boosted?"Boosted ":"Boosts ")+std::to_string(selected.boosts)).c_str());
         lv_label_set_text(body,""); visible(feedViewport,true);
         auto &post=posts[indexPost];
         const lv_font_t *font=largeText?&lv_font_montserrat_16:&lv_font_montserrat_14;
@@ -188,7 +193,7 @@ static void draw() {
             lv_obj_set_y(progress,55+(viewport-thumb)*post.scroll/maximum);
         }
     } else lv_label_set_text(body,searchView?"No matching posts.\n\nEsc to return to your feed.":home?"No posts yet.\n\nFollow a few accounts,\nthen refresh with R.":"No local posts.\n\nR to try again.");
-    std::string hint=busy?"Loading...  F/X Scroll  O Settings":!notice.empty()?notice:endOfFeed && indexPost+1==(int)posts.size()?"End of feed   R Refresh   O Settings":"Z/C Posts  F/X Scroll  P Reply  B Boost  Q Search";
+    std::string hint=busy?"Loading...":!notice.empty()?notice:"Z/C Post  F/X Scroll  N New  P Reply  B Boost  V Like";
     lv_label_set_text(foot,hint.c_str());
 }
 static void ui_init() {
@@ -284,13 +289,17 @@ static void receive(const json &value){
         for(auto &p:data){
             std::string id=p.at("id");
             if(std::none_of(posts.begin(),posts.end(),[&](const Post &post){return post.id==id;})){
-                Post item{};item.title=p.at("title");item.body=p.at("body");item.id=id;item.replies=p.value("replies",0);item.boosts=p.value("boosts",0);item.favourites=p.value("favourites",0);item.target=p.value("target",id);item.acct=p.value("acct",std::string());item.visibility=p.value("visibility",std::string("public"));item.warning=p.value("warning",std::string());item.boosted=p.value("boosted",false);
+                Post item{};item.title=p.at("title");item.body=p.at("body");item.id=id;item.replies=p.value("replies",0);item.boosts=p.value("boosts",0);item.favourites=p.value("favourites",0);item.target=p.value("target",id);item.acct=p.value("acct",std::string());item.visibility=p.value("visibility",std::string("public"));item.warning=p.value("warning",std::string());item.boosted=p.value("boosted",false);item.favourited=p.value("favourited",false);
                 auto old=std::find_if(oldPosts.begin(),oldPosts.end(),[&](const Post &a){return a.id==id;});if(old!=oldPosts.end() && old->warning==item.warning)item.revealed=old->revealed;posts.push_back(std::move(item));}
         }
         if(pendingAppend){endOfFeed=posts.size()==count;if(posts.size()>count)indexPost=count;}
         else for(size_t i=0;i<posts.size();i++)if(posts[i].id==selected){indexPost=i;posts[i].scroll=oldScroll;break;}
         // Keep memory bounded when paging through long timelines.
         if(posts.size()>200){int trim=posts.size()-200;posts.erase(posts.begin(),posts.begin()+trim);indexPost=std::max(0,indexPost-trim);}
+        notice.clear();
+    }else if(op=="favourite"){
+        auto target=value.value("target",std::string());bool liked=value.value("favourited",false);int count=value.value("favourites",0);
+        for(auto &post:posts)if(post.target==target){post.favourited=liked;post.favourites=std::max(0,count);}
         notice.clear();
     }else if(op=="boost"){
         auto target=value.value("target",std::string());bool boosted=value.value("boosted",false);int count=value.value("boosts",0);
@@ -374,6 +383,7 @@ static void key(int k,const std::string &text="",bool repeat=false){
     else if((k=='q'||k=='/') && !busy){if(token.empty())notice="Sign in to search.";else{input.clear();notice.clear();mode=Search;}}
     else if(k=='w' && !posts.empty() && !posts[indexPost].warning.empty()){posts[indexPost].revealed=!posts[indexPost].revealed;posts[indexPost].scroll=0;notice.clear();}
     else if(k=='p' && !busy && !posts.empty()){auto &post=posts[indexPost];if(token.empty())notice="Sign in to reply.";else if(post.target.empty()||post.acct.empty()||(post.visibility!="public"&&post.visibility!="unlisted"&&post.visibility!="private"&&post.visibility!="direct"))notice="Cannot reply to this post.";else{replyTarget=post.target;replyVisibility=post.visibility;input="@"+post.acct+" ";notice.clear();mode=Compose;}}
+    else if(k=='v' && !busy && !posts.empty()){auto &post=posts[indexPost];if(token.empty())notice="Sign in to like.";else{send({{"op","favourite"},{"target",post.target},{"undo",post.favourited}});notice="Updating like...";}}
     else if(k=='b' && !busy && !posts.empty()){auto &post=posts[indexPost];if(token.empty())notice="Sign in to boost.";else if(post.visibility=="private"||post.visibility=="direct")notice="This post cannot be boosted.";else{send({{"op","boost"},{"target",post.target},{"undo",post.boosted}});notice="Updating boost...";}}
     else if(k=='r' && !searchView)requestFeed();
     else if(k=='t' && !busy && !searchView){if(token.empty() && !home)notice="L Sign in to read your home feed";else{home=!home;posts.clear();indexPost=0;endOfFeed=false;requestFeed();}}
@@ -410,9 +420,9 @@ static void stopHelper(){
 int main(int argc,char **argv){
     if(argc==2 && std::string(argv[1])=="--version"){
 #ifdef POCKET_TEST_BUILD
-        puts("m pocket TEST 0.2.0-beta3-test4 (Cardputer Zero arm64)");
+        puts("m pocket TEST 0.2.2~beta1 (Cardputer Zero arm64)");
 #else
-        puts("m pocket 0.2.1 (Cardputer Zero arm64)");
+        puts("m pocket 0.2.2~symbeta1 (Cardputer Zero arm64)");
 #endif
         return 0;
     }
